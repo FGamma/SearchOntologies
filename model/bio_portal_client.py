@@ -43,13 +43,6 @@ class BioPortalClient:
         ontology = self._normalize_ontology_id(ontology_id)
         term = self._normalize_term_value(cell_value)
 
-        params = {
-            "q": term,
-            "ontologies": ontology,
-            "apikey": self._api_key,
-            "require_exact_match": "true",
-        }
-
         try:
             headers = {"Authorization": f"apikey token={self._api_key}"}
             response = self._session.get(
@@ -57,7 +50,7 @@ class BioPortalClient:
                 params={
                     "q": term,
                     "ontologies": ontology,
-                    "require_exact_match": "true",
+                    #"require_exact_match": "true",
                 },
                 headers=headers,
                 timeout=DEFAULT_TIMEOUT,
