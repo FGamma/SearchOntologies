@@ -46,12 +46,16 @@ class BioPortalClient:
         params = {
             "q": term,
             "ontologies": ontology,
-            "apikey": self._api_key,
+            "require_exact_match": False,
         }
 
         try:
+            headers = {"Authorization": f"apikey token={self._api_key}"}
             response = self._session.get(
-                BIOPORTAL_URL, params=params, timeout=DEFAULT_TIMEOUT
+                BIOPORTAL_URL,
+                params=params,
+                headers=headers,
+                timeout=DEFAULT_TIMEOUT
             )
         except requests.RequestException as exc:
             raise BioPortalError(
