@@ -72,7 +72,7 @@ class MetadataFileIO:
 
         return metadata_container
 
-    def write_ontology_export(self, directory: Path,
+    def write_ontology_export_csv(self, directory: Path,
                               dataset_id: str,
                               fieldnames: list[str],
                               rows: list[dict]) -> Path:
@@ -84,7 +84,7 @@ class MetadataFileIO:
         self.write_csv(export_path, fieldnames, rows)
         return export_path
 
-    def write_synonyms_export(self, directory: Path,
+    def write_synonyms_export_csv(self, directory: Path,
                               dataset_id: str,
                               rows: list[dict]) -> Path:
         export_path = self._build_export_path(

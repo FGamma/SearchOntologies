@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Iterator
 
 from model.bio_portal_client import BioPortalClient
 from model.metadata import Metadata
@@ -23,12 +24,15 @@ class ModelOntology:
         self._metadata_container = MetadataMappingDao.load_metadata_mapping(
             self._domains)
         self._metadata_file_io = metadata_file_io or MetadataFileIO()
+        self._metadata_entries: tuple[Metadata, ...] = (
+            self._metadata_container.get_metadata_entries_sorted()
+        )
 
     @property
     def bioportal(self) -> BioPortalClient:
         return self._bioportal
 
-    def read_metadata_fields(self, file_path: str):
+    def read_metadata_fields(self, file_path: str | Path):
         """Populate metadata values by reading the provided Excel file."""
         file_path = Path(file_path)
         return self._metadata_file_io.read_metadata_values(
@@ -39,7 +43,7 @@ class ModelOntology:
         """Return the dataset id from loaded metadata."""
         return self._metadata_container.get_dataset_id()
 
-    def export_csv(
+    def export_metadata_files(
             self,
             directory_path: str,
             user_selection: dict[str, str],
@@ -47,11 +51,11 @@ class ModelOntology:
             export_format: str = "csv",
             empty_value: str = "",
     ) -> list[Path]:
-        """Export ontology selections to CSV or Excel files."""
+        """Export ontology selections to files in the requested format."""
         metadata_container = self._metadata_container
         dataset_id = metadata_container.get_dataset_id()
         fieldnames, row = self._build_export_row(
-            metadata_container, user_selection, dataset_id, empty_value
+            user_selection, dataset_id, empty_value
         )
         directory = Path(directory_path)
         export_paths: list[Path] = []
@@ -94,36 +98,15 @@ class ModelOntology:
 
         Returns a list of (metadata, term, ontology) tuples.
         """
-        metadata_dict = self._metadata_container.get_cells_sorted()
         results = []
-        for meta in metadata_dict.values():
-            domain = meta.get_domain()
+        for meta in self._iter_searchable_metadata():
+
             cell_value = meta.get_cell_value()
+            terms = self._split_terms(cell_value) if cell_value else [""]
+            ontology_id = self._resolve_ontology_id(meta)
 
-            if not cell_value or not domain or not domain.ontology:
-                continue
-
-            if domain.id.casefold() == "dataset":
-                continue
-
-            ontology_id = meta.get_ontology_id()
-            if not ontology_id:
-                continue
-
-            terms = self._split_terms(cell_value)
             for term in terms:
-                result_items = self._bioportal.search_ontology(
-                    cell_value=term,
-                    ontology_id=ontology_id
-                )
-                candidates = []
-                for item in result_items:
-                    candidates.append(Ontology(
-                        id=ontology_id,
-                        value=item.get("notation", ""),
-                        base_uri=item.get("purl", ""),
-                        synonyms=item.get("synonyms", []),
-                    ))
+                candidates = self._search_candidates(term, ontology_id)
 
                 results.append((meta, term, candidates))
 
@@ -133,32 +116,17 @@ class ModelOntology:
         """Return a cleaned list of comma-separated terms."""
         return self._split_terms(cell_value)
 
-    @staticmethod
-    def build_group_id(metadata, term: str, index: int) -> str:
-        safe_term = term if term else "<empty>"
-        return f"{metadata.code}:{safe_term}:{index}"
-
-    @staticmethod
-    def _split_terms(cell_value: str) -> list[str]:
-        if not cell_value:
-            return []
-        parts = [part.strip() for part in cell_value.split(",")]
-        return [part for part in parts if part]
-
-    def _build_export_row(self, metadata_container,
-                          user_selection: dict[str, str],
-                          dataset_id: str,
-                          empty_value: str):
+    def _build_export_row(
+            self,
+            user_selection: dict[str, str],
+            dataset_id: str,
+            empty_value: str,
+    ) -> tuple[list[str], dict[str, str]]:
         domain_order = []
         domain_values = {}
         entry_index = 0
 
-        for metadata in metadata_container.get_cells_sorted().values():
-            domain = getattr(metadata, "domain", None)
-            if not domain or not domain.ontology:
-                continue
-            if domain.id.casefold() == "dataset":
-                continue
+        for metadata in self._iter_searchable_metadata():
 
             ontology_domain = self._format_ontology_domain(metadata)
             if ontology_domain not in domain_values:
@@ -204,10 +172,13 @@ class ModelOntology:
 
         rows = []
         for code, synonyms in grouped.items():
+            unique_synonyms = self._unique_synonyms(synonyms)
+            if not unique_synonyms:
+                continue
             rows.append({
                 "OntologyCode": code,
                 "Synonyms": self._format_cell_value(
-                    self._unique_synonyms(synonyms),
+                    unique_synonyms,
                     empty_value,
                 ),
             })
@@ -231,7 +202,7 @@ class ModelOntology:
                 )
             ]
         return [
-            self._metadata_file_io.write_ontology_export(
+            self._metadata_file_io.write_ontology_export_csv(
                 directory,
                 dataset_id,
                 fieldnames,
@@ -255,11 +226,37 @@ class ModelOntology:
                 )
             ]
         return [
-            self._metadata_file_io.write_synonyms_export(
+            self._metadata_file_io.write_synonyms_export_csv(
                 directory,
                 dataset_id,
                 rows,
             )
+        ]
+
+    def _iter_searchable_metadata(self) -> Iterator[Metadata]:
+        for metadata in self._metadata_entries:
+            domain = getattr(metadata, "domain", None)
+            ontology = getattr(domain, "ontology", None) if domain else None
+            if not domain or not ontology or domain.id.casefold() == "dataset":
+                continue
+            yield metadata
+
+    def _search_candidates(self, term: str, ontology_id: str) -> list[Ontology]:
+        if not term or not ontology_id:
+            return []
+
+        result_items = self._bioportal.search_ontology(
+            cell_value=term,
+            ontology_id=ontology_id,
+        )
+        return [
+            Ontology(
+                id=ontology_id,
+                value=item.get("notation", ""),
+                base_uri=item.get("purl", ""),
+                synonyms=item.get("synonyms", []),
+            )
+            for item in result_items
         ]
 
     def _format_ontology_domain(self, metadata) -> str:
@@ -268,24 +265,43 @@ class ModelOntology:
         return f"{self._pascal_case(ontology_id)}{self._pascal_case(domain_value)}"
 
     @staticmethod
+    def build_group_id(metadata, term: str, index: int) -> str:
+        safe_term = term if term else "<empty>"
+        return f"{metadata.code}:{safe_term}:{index}"
+
+    @staticmethod
+    def _split_terms(cell_value: str) -> list[str]:
+        if not cell_value:
+            return []
+        parts = [part.strip() for part in cell_value.split(",")]
+        return [part for part in parts if part]
+
+    @staticmethod
+    def _resolve_ontology_id(metadata: Metadata) -> str:
+        domain = getattr(metadata, "domain", None)
+        ontology = getattr(domain, "ontology", None) if domain else None
+        return getattr(ontology, "id", "") if ontology else ""
+
+    @staticmethod
     def _format_cell_value(values: list[str], empty_value: str) -> str:
         cleaned = [value for value in values if value]
         if not cleaned:
-            return "NULL"
-        return ";".join(cleaned) if cleaned else empty_value
+            return empty_value or "NULL"
+        return ";".join(cleaned)
 
     @staticmethod
     def _unique_synonyms(values: list[str]) -> list[str]:
         unique = []
         seen = set()
         for value in values or []:
-            if not value:
+            normalized = value.strip() if isinstance(value, str) else ""
+            if not normalized:
                 continue
-            key = value.casefold()
+            key = normalized.casefold()
             if key in seen:
                 continue
             seen.add(key)
-            unique.append(value)
+            unique.append(normalized)
         return unique
 
     @staticmethod

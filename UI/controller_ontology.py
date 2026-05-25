@@ -11,6 +11,8 @@ from model.ontology_selection import OntologySelection
 
 
 class ControllerOntology:
+    """Coordinate UI interactions for metadata loading, lookup, and export."""
+
     def __init__(self, view, model):
         # the view, with the graphical elements of the UI
         self._view = view
@@ -21,18 +23,10 @@ class ControllerOntology:
         self._selection_candidates: dict[str, dict[str, OntologySelection]] = {}
         self._selection_details: dict[str, OntologySelection] = {}
 
-    def set_user_selection(self, group_id: str, value: str):
-        """Store the user's selection for a given row group."""
-        self._user_selection[group_id] = value
-        selection = self._selection_candidates.get(group_id, {}).get(value)
-        if selection:
-            self._selection_details[group_id] = selection
-        else:
-            self._selection_details.pop(group_id, None)
-
-    def get_metadata_excel_file(self,
-                                metadata_xlsx_file: list[
-                                                        FilePickerFile] | None):
+    def get_metadata_excel_file(
+            self,
+            metadata_xlsx_file: list[FilePickerFile] | None,
+    ) -> None:
         """Read predefined fields from the selected Excel file."""
         if not metadata_xlsx_file:
             self._view.create_alert("No file selected!")
@@ -74,15 +68,28 @@ class ControllerOntology:
         finally:
             self._view.set_search_loading(False)
 
-    def export_csv(self, directory_path: str, export_format: str = "csv"):
-        """Export ontology codes to a file in the selected format."""
+    def set_user_selection(self, group_id: str, value: str):
+        """Store the user's selection for a given row group."""
+        self._user_selection[group_id] = value
+        selection = self._selection_candidates.get(group_id, {}).get(value)
+        if selection:
+            self._selection_details[group_id] = selection
+        else:
+            self._selection_details.pop(group_id, None)
+
+    def export_metadata_files(
+            self,
+            directory_path: str,
+            export_format: str = "csv",
+    ) -> None:
+        """Export ontology and synonym files in the selected format."""
         if not directory_path:
             self._view.create_alert("No folder selected!")
             return
         if export_format not in {"csv", "excel"}:
             self._view.create_alert("Unsupported export format selected.")
             return
-        export_paths = self._model.export_csv(
+        export_paths = self._model.export_metadata_files(
             directory_path,
             self._user_selection,
             list(self._selection_details.values()),
@@ -95,7 +102,7 @@ class ControllerOntology:
 
         exported_files = "\n".join(f"- {path}" for path in export_paths)
         self._view.create_alert(
-            "CSV files saved:\n"
+            "Export files saved:\n"
             f"{exported_files}"
         )
 
@@ -126,8 +133,7 @@ class ControllerOntology:
             if domain.id.casefold() == "dataset":
                 continue
 
-            ontology = metadata.domain.ontology if getattr(metadata, "domain",
-                                                           None) else None
+            ontology = metadata.domain.ontology if getattr(metadata, "domain", None) else None
             terms = self._model.split_terms(
                 getattr(metadata, "cell_value", "")) or [""]
 
@@ -141,26 +147,7 @@ class ControllerOntology:
             term_results: list[tuple[Metadata, str, list[Ontology]]],
     ) -> list:
         """Build selectable table rows for ontology term lookup results."""
-        self._update_default_selection(term_results)
         return self._build_rows(term_results, allow_selection=True)
-
-    def _update_default_selection(
-            self,
-            entries: Iterable[
-                tuple[Metadata, str, Optional[Iterable[Ontology]]]
-            ],
-    ):
-        """Set default selections for term groups if missing."""
-        for index, (metadata, term, ontology) in enumerate(entries):
-            candidates = self._normalize_candidates(ontology)
-            group_id = self._model.build_group_id(metadata, term, index)
-            if self._user_selection.get(group_id):
-                continue
-            for candidate in candidates:
-                candidate_value = self._candidate_value(candidate)
-                if candidate_value:
-                    self._user_selection[group_id] = candidate_value
-                    break
 
     def _build_rows(
             self,
@@ -171,16 +158,21 @@ class ControllerOntology:
     ) -> list:
         """Create UI table row dictionaries for metadata or term results."""
         rows = []
-        group_index = 0
         if allow_selection:
             self._selection_candidates = {}
             self._selection_details = {}
         for index, (metadata, term, ontology) in enumerate(entries):
             candidates = self._normalize_candidates(ontology)
             group_id = self._model.build_group_id(metadata, term, index)
-            default_value = self._user_selection.get(group_id, "")
+
             if allow_selection:
                 self._selection_candidates[group_id] = {}
+
+            default_value = self._resolve_default_value(
+                group_id,
+                candidates,
+                allow_selection,
+            )
             for candidate in candidates:
                 selection_option = None
                 if allow_selection and candidate:
@@ -205,7 +197,7 @@ class ControllerOntology:
                     if getattr(candidate, "synonyms", None) else "",
                     "iri": getattr(candidate, "base_uri",
                                    "") if candidate else "",
-                    "group_index": group_index,
+                    "group_index": index,
                     "selection_group": group_id,
                     "selection_option": selection_option,
                     "selected_value": default_value,
@@ -218,9 +210,27 @@ class ControllerOntology:
                 if selection:
                     self._selection_details[group_id] = selection
 
-            group_index += 1
-
         return rows
+
+    def _resolve_default_value(
+            self,
+            group_id: str,
+            candidates: list[Ontology | None],
+            allow_selection: bool,
+    ) -> str:
+        """Keep or infer the default selected candidate for a row group."""
+        default_value = self._user_selection.get(group_id, "")
+        if default_value or not allow_selection:
+            return default_value
+
+        for candidate in candidates:
+            candidate_value = self._candidate_value(candidate)
+            if not candidate_value:
+                continue
+            self._user_selection[group_id] = candidate_value
+            return candidate_value
+
+        return ""
 
     @staticmethod
     def _build_selection_details(
@@ -236,6 +246,7 @@ class ControllerOntology:
 
     @staticmethod
     def _merge_synonyms(synonyms: list[str]) -> list[str]:
+        """Return synonyms de-duplicated case-insensitively preserving order."""
         merged = []
         seen = set()
         for synonym in synonyms or []:
@@ -250,6 +261,7 @@ class ControllerOntology:
 
     @staticmethod
     def _normalize_candidates(ontology):
+        """Normalize ontology values to a non-empty candidate list."""
         if ontology is None:
             return [None]
         if isinstance(ontology, str):

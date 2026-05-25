@@ -4,90 +4,190 @@
 
 # FoundingGIDE Ontology
 
-A desktop application for mapping metadata fields from a structured Excel template to ontology terms using the BioPortal search API. The UI is built with Flet, and the backend loads metadata mappings from JSON, queries BioPortal for candidate terms, and exports curated ontology selections to CSV or Excel.
+Desktop application (Flet + Python) that helps curate ontology mappings for metadata contained in a predefined Excel template.  
+For each metadata value, the app queries BioPortal and lets users select the most suitable ontology code, then exports normalized files (`CSV` or `Excel`) with selected codes and optional synonyms.
 
-## Key Features
+---
 
-- **Template-driven metadata ingestion**: reads specific cells from a predefined Excel worksheet and validates labels before extraction.
-- **Ontology lookup workflow**: queries BioPortal per metadata term and displays selectable candidate terms.
-- **Domain-to-ontology mapping**: drives ontology selection based on domain metadata from JSON configuration.
-- **Export pipeline**: produces ontology codes and synonym lists as CSV or Excel files.
 
-## Architecture Overview
+## Table of Contents
 
-| Layer | Responsibilities | Key Modules |
+- [What the app does](#what-the-app-does)
+- [Core features](#core-features)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Installation and setup](#installation-and-setup)
+- [How to run](#how-to-run)
+- [Metadata template contract](#metadata-template-contract)
+- [Ontology lookup and selection behavior](#ontology-lookup-and-selection-behavior)
+- [Export format](#export-format)
+- [Configuration files](#configuration-files)
+- [Troubleshooting](#troubleshooting)
+- [Limitations and notes](#limitations-and-notes)
+
+---
+
+## What the app does
+
+1. Loads metadata from a specific Excel worksheet and fixed cell coordinates.
+2. Splits comma-separated values into individual candidate terms.
+3. Queries BioPortal for each term using ontology IDs configured per domain.
+4. Lets the user choose one ontology result per term.
+5. Exports selected ontology codes and synonyms to files.
+
+---
+
+## Core features
+
+- **Template-driven metadata ingestion**
+  - Reads only the coordinates declared in `persistence/metadata_mapping.json`.
+  - Validates cell labels before reading associated values.
+- **Domain-specific ontology search**
+  - Resolves target ontology from `persistence/domain_ontology.json`.
+  - Uses BioPortal Search API and keeps the top matches.
+- **Interactive curation UI**
+  - Browse metadata terms, review candidate ontology codes, and select preferred codes.
+- **Flexible export**
+  - Export as CSV or Excel.
+  - Generates ontology-code and synonym files.
+
+---
+
+## Architecture
+
+| Layer | Responsibility | Main files |
 | --- | --- | --- |
-| UI | Flet-based desktop interface, search and export workflow | `UI/view_ontology.py`, `UI/controller_ontology.py` |
-| Model | Domain logic, ontology search, export orchestration | `model/model_ontology.py`, `model/bio_portal_client.py` |
-| Persistence | Domain and metadata mappings | `persistence/domain_ontology.json`, `persistence/metadata_mapping.json` |
-| Services | Excel read/write utilities | `services/metadata_file_io.py` |
+| UI | App layout, user actions, dialogs, table rendering | `UI/view_ontology.py`, `UI/controller_ontology.py` |
+| Model | Business logic for lookup, grouping, and export rows | `model/model_ontology.py`, `model/ontology_selection.py` |
+| Integrations | BioPortal API client and response normalization | `model/bio_portal_client.py` |
+| Persistence | Domain ontology map and metadata template map (JSON) | `persistence/domain_ontology.json`, `persistence/metadata_mapping.json` |
+| Services | Excel/CSV read-write operations | `services/metadata_file_io.py` |
+| Startup | App bootstrap and dependency wiring | `main.py` |
+
+---
 
 ## Requirements
 
-- Python 3.10+ (recommended)
-- BioPortal API key
-- Dependencies listed in `requirements.txt`
+- Python **3.10+**
+- A valid **BioPortal API key**
+- Dependencies from `requirements.txt`
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Installation and setup
+
+Create a file at:
+
+```text
+config/.env
+```
 
 ## Setup
+With at least:
 
-1. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```env
+BIOPORTAL_API_KEY=your_bioportal_api_key
+```
 
-2. **Create a `.env` file**
-   - The app expects a `.env` file at `config/.env`.
-   - Add your BioPortal API key:
-     ```bash
-     BIOPORTAL_API_KEY=your_bioportal_api_key
-     ```
+> If `config/.env` is missing, empty, or the key is blank, the app will raise a configuration error.
 
-3. **Run the application**
-   ```bash
-   python main.py
-   ```
+---
 
-## Metadata Template Expectations
+## How to run
 
-The application reads a specific worksheet and column in your Excel file based on `persistence/metadata_mapping.json`:
+```bash
+python main.py
+```
+This starts the Flet desktop UI.
 
-- **Sheet name**: `metadata template`
-- **Value column index**: `4` (column D)
-- **Cell labels**: The label text in the template must match the `cell_name` values in the mapping file.
-- **Dataset ID**: The cell for domain `dataset` is used as the dataset identifier and is required for exported file naming.
+---
 
-If the sheet name or label text does not match, the app will skip those cells and continue processing.
+## Metadata template contract
 
-## Domain-to-Ontology Mapping
+The reader is strict and depends on the mapping configuration in `persistence/metadata_mapping.json`.
 
-`persistence/domain_ontology.json` defines which BioPortal ontology is used for each domain (e.g., `disease → DOID`, `drugs → CHEBI`). This mapping controls the ontology queried for each metadata field.
+Current defaults:
 
-## Workflow
+- **Worksheet name**: `metadata template`
+- **Value column index**: `4` (Excel column D)
+- **Cell coordinates**: fixed list (e.g., `B21`, `B22`, ...)
+- **Label validation**: text in each mapped cell must match `cell_name`
+- **Dataset ID source**: mapped `dataset` domain entry (used in export filenames)
 
-1. **Select Excel file**: load the metadata template populated with user values.
-2. **Search ontology terms**: the app queries BioPortal and shows the top matches.
-3. **Select preferred term**: choose the correct ontology code from the candidates.
-4. **Export results**:
-   - `ontology_export.csv` / `ontology_export.xlsx`
-   - `ontology_export_synonyms.csv` / `ontology_export_synonyms.xlsx`
+If a sheet name, cell coordinate, or label does not match expectations, that metadata value is skipped.
 
-## Export Outputs
+---
 
-The export creates up to two files:
+## Ontology lookup and selection behavior
 
-- **Ontology codes**: one row per dataset, with ontology codes grouped by domain.
-- **Ontology synonyms**: a two-column list of `OntologyCode` and `Synonyms` for selections.
+- Each metadata value can contain multiple terms separated by commas.
+- Terms are trimmed and searched independently.
+- Ontology ID for each metadata entry is resolved from domain mapping (`domain_ontology.json`).
+- For each query, BioPortal results are limited to the top candidates returned by the client logic.
+- The selected ontology code is what gets exported in the ontology file.
 
-Export format can be CSV or Excel, and filenames are prefixed with the dataset ID when available.
+---
 
-## Development Notes
+## Export format
 
-- The UI workflow is event-driven and uses Flet’s `Page` APIs.
-- BioPortal responses are normalized to derive compact codes and canonical PURLs where possible.
-- Metadata values can contain multiple comma-separated terms; each term is searched independently.
+After curation, the app can write up to two output files:
+
+1. **Ontology export**
+   - CSV: `ontology_export.csv`
+   - Excel: `ontology_export.xlsx`
+   - Structure: one row per dataset with `DatasetId` and domain-based columns.
+
+2. **Synonyms export**
+   - CSV: `ontology_export_synonyms.csv`
+   - Excel: `ontology_export_synonyms.xlsx`
+   - Structure: `OntologyCode`, `Synonyms`.
+
+If dataset ID is available, filenames are prefixed with it.
+
+---
+
+## Configuration files
+
+### `persistence/domain_ontology.json`
+Maps logical domains to ontology acronyms (examples: `disease -> DOID`, `drugs -> CHEBI`, `anatomy -> UBERON`).
+
+### `persistence/metadata_mapping.json`
+Declares:
+- sheet name,
+- value column,
+- fixed cell coordinates,
+- expected labels,
+- domain/subdomain mapping for each coordinate.
+
+Any update to the Excel template should be mirrored in this file.
+
+---
 
 ## Troubleshooting
 
-- **Missing API key**: ensure `config/.env` exists and contains `BIOPORTAL_API_KEY`.
-- **No results**: confirm internet access and verify that the target ontology contains your term.
-- **Template mismatch**: ensure sheet name and label text align with `metadata_mapping.json`.
+  - Verify `config/.env` exists and contains `BIOPORTAL_API_KEY`.
+- **No ontology results**
+  - Check network access.
+  - Ensure searched terms exist in the target ontology.
+- **Template not read as expected**
+  - Confirm worksheet name and label text are unchanged.
+  - Verify mapped coordinates in `metadata_mapping.json`.
+- **Unexpected empty export columns**
+  - Ensure a code was selected in the UI for each searchable term.
+
+---
+
+## Limitations and notes
+
+- The app is intentionally coupled to a specific Excel template structure.
+- Metadata extraction is position/label based, not schema-discovery based.
+- Search quality depends on BioPortal availability and ontology coverage.
+- Only selected codes are exported; unselected terms remain empty (or `NULL` fallback).
+
+If you plan to support multiple templates, consider introducing versioned mapping profiles and a template validator step before lookup.
