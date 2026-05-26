@@ -665,10 +665,9 @@ class ViewOntology(ft.Control):
                 return
 
             if not e.control.value:
-                default_checkbox = group_checkboxes[0]
                 for group_checkbox in group_checkboxes:
-                    group_checkbox.value = group_checkbox is default_checkbox
-                self._controller.set_user_selection(group, default_checkbox.data)
+                    group_checkbox.value = False
+                self._controller.set_user_selection(group, "")
             else:
                 for group_checkbox in group_checkboxes:
                     group_checkbox.value = group_checkbox is e.control

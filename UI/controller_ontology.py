@@ -70,6 +70,11 @@ class ControllerOntology:
 
     def set_user_selection(self, group_id: str, value: str):
         """Store the user's selection for a given row group."""
+        if not value:
+            self._user_selection.pop(group_id, None)
+            self._selection_details.pop(group_id, None)
+            return
+
         self._user_selection[group_id] = value
         selection = self._selection_candidates.get(group_id, {}).get(value)
         if selection:
@@ -161,9 +166,16 @@ class ControllerOntology:
         if allow_selection:
             self._selection_candidates = {}
             self._selection_details = {}
-        for index, (metadata, term, ontology) in enumerate(entries):
+        selection_index = 0
+        for row_index, (metadata, term, ontology) in enumerate(entries):
             candidates = self._normalize_candidates(ontology)
-            group_id = self._model.build_group_id(metadata, term, index)
+            group_id = self._model.build_group_id(
+                metadata,
+                term,
+                selection_index,
+            )
+            if term:
+                selection_index += 1
 
             if allow_selection:
                 self._selection_candidates[group_id] = {}
@@ -197,7 +209,7 @@ class ControllerOntology:
                     if getattr(candidate, "synonyms", None) else "",
                     "iri": getattr(candidate, "base_uri",
                                    "") if candidate else "",
-                    "group_index": index,
+                    "group_index": row_index,
                     "selection_group": group_id,
                     "selection_option": selection_option,
                     "selected_value": default_value,
@@ -220,16 +232,18 @@ class ControllerOntology:
     ) -> str:
         """Keep or infer the default selected candidate for a row group."""
         default_value = self._user_selection.get(group_id, "")
-        if default_value or not allow_selection:
+        if not default_value or not allow_selection:
             return default_value
 
-        for candidate in candidates:
-            candidate_value = self._candidate_value(candidate)
-            if not candidate_value:
-                continue
-            self._user_selection[group_id] = candidate_value
-            return candidate_value
+        candidate_values = {
+            self._candidate_value(candidate)
+            for candidate in candidates
+            if self._candidate_value(candidate)
+        }
+        if default_value in candidate_values:
+            return default_value
 
+        self._user_selection.pop(group_id, None)
         return ""
 
     @staticmethod

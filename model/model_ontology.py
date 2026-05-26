@@ -249,7 +249,7 @@ class ModelOntology:
             cell_value=term,
             ontology_id=ontology_id,
         )
-        return [
+        candidates = [
             Ontology(
                 id=ontology_id,
                 value=item.get("notation", ""),
@@ -258,6 +258,7 @@ class ModelOntology:
             )
             for item in result_items
         ]
+        return self._deduplicate_candidates(candidates)
 
     def _format_ontology_domain(self, metadata) -> str:
         ontology_id = getattr(metadata.domain.ontology, "id", "") or ""
@@ -303,6 +304,35 @@ class ModelOntology:
             seen.add(key)
             unique.append(normalized)
         return unique
+
+    @classmethod
+    def _deduplicate_candidates(cls, candidates: list[Ontology]) -> list[Ontology]:
+        """Merge repeated ontology candidates while preserving result order."""
+        unique: list[Ontology] = []
+        by_key: dict[tuple[str, str], Ontology] = {}
+
+        for candidate in candidates:
+            key = cls._candidate_dedupe_key(candidate)
+            existing = by_key.get(key)
+
+            if existing:
+                existing.synonyms = cls._unique_synonyms(
+                    [*existing.synonyms, *candidate.synonyms]
+                )
+                if not existing.base_uri and candidate.base_uri:
+                    existing.base_uri = candidate.base_uri
+                continue
+
+            candidate.synonyms = cls._unique_synonyms(candidate.synonyms)
+            by_key[key] = candidate
+            unique.append(candidate)
+
+        return unique
+
+    @staticmethod
+    def _candidate_dedupe_key(candidate: Ontology) -> tuple[str, str]:
+        value = (candidate.value or candidate.base_uri or "").strip().casefold()
+        return ((candidate.id or "").strip().casefold(), value)
 
     @staticmethod
     def _pascal_case(value: str) -> str:

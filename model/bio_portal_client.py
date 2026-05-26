@@ -4,6 +4,7 @@ from config.config import Config, ConfigError
 
 BIOPORTAL_URL = "https://data.bioontology.org/search"
 DEFAULT_TIMEOUT = 30
+DEFAULT_RESULT_LIMIT = 4
 
 
 class BioPortalError(RuntimeError):
@@ -46,7 +47,7 @@ class BioPortalClient:
         params = {
             "q": term,
             "ontologies": ontology,
-            "require_exact_match": False,
+            "require_exact_match": "false",
         }
 
         try:
@@ -73,22 +74,7 @@ class BioPortalClient:
             raise BioPortalError(
                 "Invalid BioPortal response (JSON expected)") from exc
 
-        items = payload.get("collection", [])
-        selected_items = self._select_top_items(items)
-        if not selected_items:
-            return []
-
-        results = []
-        for item in selected_items:
-            identifier = self._best_identifier(item)
-            results.append({
-                "identifier": identifier,
-                "notation": self._best_notation(item, identifier),
-                "purl": self._extract_purl(identifier),
-                "synonyms": self._extract_synonyms(item),
-            })
-
-        return results
+        return self._select_distinct_results(payload.get("collection", []))
 
     @staticmethod
     def _normalize_ontology_id(ontology: str | None) -> str:
@@ -108,13 +94,48 @@ class BioPortalClient:
         value = value.strip()
         return value or None
 
-    @staticmethod
-    def _select_top_items(items: list[dict], limit: int = 3) -> list[dict]:
-        """Pick the most relevant results returned by BioPortal."""
+    @classmethod
+    def _select_distinct_results(
+            cls,
+            items: list[dict],
+            limit: int = DEFAULT_RESULT_LIMIT,
+    ) -> list[dict]:
+        """Pick the first distinct ontology codes returned by BioPortal."""
         if not items:
             return []
 
-        return items[:limit]
+        results = []
+        by_code: dict[str, dict] = {}
+
+        for item in items:
+            identifier = cls._best_identifier(item)
+            notation = cls._best_notation(item, identifier)
+            code = (notation or identifier or "").strip()
+
+            if not code:
+                continue
+
+            key = code.casefold()
+            existing = by_code.get(key)
+            if existing:
+                existing["synonyms"] = cls._merge_synonyms(
+                    [*existing["synonyms"], *cls._extract_synonyms(item)]
+                )
+                continue
+
+            result = {
+                "identifier": identifier,
+                "notation": notation,
+                "purl": cls._extract_purl(identifier),
+                "synonyms": cls._extract_synonyms(item),
+            }
+            by_code[key] = result
+            results.append(result)
+
+            if len(results) == limit:
+                break
+
+        return results
 
     @staticmethod
     def _best_identifier(item) -> str | None:
@@ -226,3 +247,19 @@ class BioPortalClient:
         if isinstance(candidates, list):
             return [str(s).strip() for s in candidates if str(s).strip()]
         return []
+
+    @staticmethod
+    def _merge_synonyms(synonyms: list[str]) -> list[str]:
+        """Return synonyms de-duplicated case-insensitively preserving order."""
+        merged = []
+        seen = set()
+        for synonym in synonyms or []:
+            normalized = synonym.strip() if isinstance(synonym, str) else ""
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(normalized)
+        return merged
