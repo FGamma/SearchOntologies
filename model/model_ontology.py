@@ -251,7 +251,7 @@ class ModelOntology:
         )
         candidates = [
             Ontology(
-                id=ontology_id,
+                id=item.get("ontology_id", ontology_id),
                 value=item.get("notation", ""),
                 base_uri=item.get("purl", ""),
                 synonyms=item.get("synonyms", []),

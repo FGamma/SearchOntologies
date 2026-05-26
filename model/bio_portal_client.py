@@ -1,10 +1,17 @@
 import requests
+from urllib.parse import quote
 
 from config.config import Config, ConfigError
 
 BIOPORTAL_URL = "https://data.bioontology.org/search"
 DEFAULT_TIMEOUT = 30
 DEFAULT_RESULT_LIMIT = 4
+SYNONYM_PROPERTY_SUFFIXES = (
+    "hasExactSynonym",
+    "hasBroadSynonym",
+    "hasNarrowSynonym",
+    "hasRelatedSynonym",
+)
 
 
 class BioPortalError(RuntimeError):
@@ -48,6 +55,7 @@ class BioPortalClient:
             "q": term,
             "ontologies": ontology,
             "require_exact_match": "false",
+            "also_search_obsolete": "false",
         }
 
         try:
@@ -74,7 +82,53 @@ class BioPortalClient:
             raise BioPortalError(
                 "Invalid BioPortal response (JSON expected)") from exc
 
-        return self._select_distinct_results(payload.get("collection", []))
+        results = self._select_distinct_results(
+            payload.get("collection", []),
+            ontology_id=ontology,
+        )
+        self._enrich_results_with_class_details(results, headers)
+
+        for result in results:
+            result.pop("class_url", None)
+
+        return results
+
+    def _enrich_results_with_class_details(
+            self,
+            results: list[dict],
+            headers: dict[str, str],
+    ) -> None:
+        """Fetch full class payloads and merge additional synonym properties."""
+        for result in results:
+            class_url = result.get("class_url")
+            if not class_url:
+                continue
+
+            try:
+                response = self._session.get(
+                    class_url,
+                    params={"include": "all"},
+                    headers=headers,
+                    timeout=DEFAULT_TIMEOUT
+                )
+            except requests.RequestException:
+                continue
+
+            if response.status_code != 200:
+                continue
+
+            try:
+                details = response.json()
+            except ValueError:
+                continue
+
+            result["synonyms"] = self._merge_synonyms(
+                [
+                    *result.get("synonyms", []),
+                    *self._extract_synonyms(details),
+                    *self._extract_property_synonyms(details),
+                ]
+            )
 
     @staticmethod
     def _normalize_ontology_id(ontology: str | None) -> str:
@@ -98,6 +152,7 @@ class BioPortalClient:
     def _select_distinct_results(
             cls,
             items: list[dict],
+            ontology_id: str | None = None,
             limit: int = DEFAULT_RESULT_LIMIT,
     ) -> list[dict]:
         """Pick the first distinct ontology codes returned by BioPortal."""
@@ -109,6 +164,9 @@ class BioPortalClient:
 
         for item in items:
             identifier = cls._best_identifier(item)
+            if not cls._identifier_matches_ontology(identifier, ontology_id):
+                continue
+
             notation = cls._best_notation(item, identifier)
             code = (notation or identifier or "").strip()
 
@@ -121,13 +179,20 @@ class BioPortalClient:
                 existing["synonyms"] = cls._merge_synonyms(
                     [*existing["synonyms"], *cls._extract_synonyms(item)]
                 )
+                if not existing.get("class_url"):
+                    existing["class_url"] = cls._extract_class_url(item)
                 continue
 
             result = {
                 "identifier": identifier,
+                "ontology_id": cls._ontology_id_from_identifier(
+                    identifier,
+                    ontology_id,
+                ),
                 "notation": notation,
                 "purl": cls._extract_purl(identifier),
                 "synonyms": cls._extract_synonyms(item),
+                "class_url": cls._extract_class_url(item),
             }
             by_code[key] = result
             results.append(result)
@@ -136,6 +201,13 @@ class BioPortalClient:
                 break
 
         return results
+
+    @staticmethod
+    def _extract_class_url(item: dict) -> str:
+        """Return the BioPortal class detail URL when it is present."""
+        links = item.get("links") or {}
+        class_url = links.get("self") if isinstance(links, dict) else ""
+        return class_url if isinstance(class_url, str) else ""
 
     @staticmethod
     def _best_identifier(item) -> str | None:
@@ -156,6 +228,44 @@ class BioPortalClient:
             return identifier.rsplit("#", maxsplit=1)[-1]
 
         return ""
+
+    @classmethod
+    def _identifier_matches_ontology(
+            cls,
+            identifier: str | None,
+            ontology_id: str | None,
+    ) -> bool:
+        """Return whether an identifier belongs to the searched ontology."""
+        expected = cls._normalize_ontology_id(ontology_id)
+        if not expected:
+            return True
+
+        actual = cls._ontology_id_from_identifier(identifier)
+        if not actual:
+            return True
+
+        return actual.casefold() == expected.casefold()
+
+    @classmethod
+    def _ontology_id_from_identifier(
+            cls,
+            identifier: str | None,
+            fallback: str | None = None,
+    ) -> str:
+        """Derive the ontology prefix from a returned class identifier."""
+        identifier = cls._normalize_iri(identifier)
+        if not identifier:
+            return cls._normalize_ontology_id(fallback)
+
+        if cls._is_ncit(identifier):
+            return "NCIT"
+
+        local_id = identifier.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+        if "_" not in local_id:
+            return cls._normalize_ontology_id(fallback)
+
+        prefix = local_id.split("_", 1)[0].strip()
+        return prefix.upper() if prefix else cls._normalize_ontology_id(fallback)
 
     @staticmethod
     def _extract_purl(identifier: str | None) -> str:
@@ -236,7 +346,16 @@ class BioPortalClient:
         if not local_id:
             return iri
 
-        return f"http://purl.obolibrary.org/obo/{onto}_{local_id}"
+        return BioPortalClient._ols4_entity_url(onto, iri)
+
+    @staticmethod
+    def _ols4_entity_url(ontology_id: str, iri: str) -> str:
+        """Build the OLS4 entity page URL for an ontology IRI."""
+        encoded_iri = quote(quote(iri, safe=""), safe="")
+        return (
+            "https://www.ebi.ac.uk/ols4/ontologies/"
+            f"{ontology_id.lower()}/entities/{encoded_iri}"
+        )
 
     @staticmethod
     def _extract_synonyms(item: dict) -> list[str]:
@@ -247,6 +366,31 @@ class BioPortalClient:
         if isinstance(candidates, list):
             return [str(s).strip() for s in candidates if str(s).strip()]
         return []
+
+    @staticmethod
+    def _extract_property_synonyms(item: dict) -> list[str]:
+        """Collect OBO synonym annotation values from a full class payload."""
+        properties = item.get("properties") or {}
+        if not isinstance(properties, dict):
+            return []
+
+        synonyms = []
+        for key, values in properties.items():
+            if not any(str(key).endswith(suffix)
+                       for suffix in SYNONYM_PROPERTY_SUFFIXES):
+                continue
+
+            if isinstance(values, str):
+                values = [values]
+
+            if isinstance(values, list):
+                synonyms.extend(
+                    str(value).strip()
+                    for value in values
+                    if str(value).strip()
+                )
+
+        return synonyms
 
     @staticmethod
     def _merge_synonyms(synonyms: list[str]) -> list[str]:
