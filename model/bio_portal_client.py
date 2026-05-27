@@ -54,8 +54,7 @@ class BioPortalClient:
         params = {
             "q": term,
             "ontologies": ontology,
-            "require_exact_match": "false",
-            "also_search_obsolete": "false",
+            "require_exact_match": "true",
         }
 
         try:
