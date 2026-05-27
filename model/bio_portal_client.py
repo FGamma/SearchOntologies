@@ -5,7 +5,7 @@ from config.config import Config, ConfigError
 
 BIOPORTAL_URL = "https://data.bioontology.org/search"
 DEFAULT_TIMEOUT = 30
-DEFAULT_RESULT_LIMIT = 4
+DEFAULT_RESULT_LIMIT = 5
 SYNONYM_PROPERTY_SUFFIXES = (
     "hasExactSynonym",
     "hasBroadSynonym",
@@ -54,7 +54,9 @@ class BioPortalClient:
         params = {
             "q": term,
             "ontologies": ontology,
-            "require_exact_match": "true",
+            "require_exact_match": "false",
+            "also_search_obsolete": "false",
+
         }
 
         try:
