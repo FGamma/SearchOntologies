@@ -5,7 +5,7 @@ from config.config import Config, ConfigError
 
 BIOPORTAL_URL = "https://data.bioontology.org/search"
 DEFAULT_TIMEOUT = 30
-DEFAULT_RESULT_LIMIT = 5
+DEFAULT_RESULT_LIMIT = 3
 SYNONYM_PROPERTY_SUFFIXES = (
     "hasExactSynonym",
     "hasBroadSynonym",
